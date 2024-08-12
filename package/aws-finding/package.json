@@ -1,0 +1,42 @@
+{
+  "name": "@auditlogic/its-aws-finding",
+  "version": "1.0.0",
+  "description": "Integration test for AWS Finding",
+  "author": "ctamas@zerobias.com",
+  "main": "dist/src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "build": "npm run transpile",
+    "clean": "rm -rf dist",
+    "test": "mocha --exit --inline-diffs --reporter=list -r ts-node/register test/**/*.ts",
+    "transpile": "tsc",
+    "transpile:watch": "tsc --watch"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:auditlogic/its.git",
+    "directory": "package/aws-finding"
+  },
+  "keywords": [],
+  "license": "ISC",
+  "devDependencies": {
+    "@auditmation/hub-core": "^4.4.8",
+    "@types/chai": "^4.3.17",
+    "@types/mocha": "^10.0.7",
+    "@types/node": "^22.2.0",
+    "chai": "^4.5.0",
+    "dotenv": "^16.4.5",
+    "mocha": "^10.7.3",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.4"
+  },
+  "dependencies": {
+    "@auditlogic/module-amazon-aws-accounts": "^1.1.4",
+    "@auditlogic/module-amazon-aws-config": "^3.1.3",
+    "@auditlogic/module-amazon-aws-securityhub": "^4.0.5",
+    "@auditmation/module-auditmation-auditmation-hub": "^3.12.10",
+    "@auditmation/module-auditmation-auditmation-platform": "^3.39.11",
+    "@auditmation/types-core-js": "^4.9.4",
+    "@supercharge/promise-pool": "^3.2.0"
+  }
+}
