@@ -60,9 +60,6 @@ export class AwsFindingTester {
     this.ruleName = await this.getAccount1ConfigRuleName();
     console.log(`Config rule name: ${this.ruleName}`);
 
-    const latestFinding = await this.getLatestUpdatedAccount1Finding();
-    const latestUpdated = latestFinding && latestFinding.updated ? latestFinding.updated : new Date('2000-01-01');
-
     if (this.alternateContact) {
       writeFileSync(BACKUP_CONTACT_FILENAME, JSON.stringify(this.alternateContact, null, 2));
 
@@ -72,7 +69,7 @@ export class AwsFindingTester {
       await this.evalConfigRule(this.ruleName!);
       console.log(`Stared evaluation of config rule "${this.ruleName}"`);
 
-      initialFinding = await this.lookForNewerAccount1Finding(latestUpdated, this.timeoutMinutes);
+      initialFinding = await this.lookForNewerAccount1Finding(new Date(), 'failed', this.timeoutMinutes);
       console.log(`Gathered initial finding: ${JSON.stringify(initialFinding, null, 2)}`);
 
       await this.updateSecurityContact(this.alternateContact);
@@ -83,7 +80,12 @@ export class AwsFindingTester {
     await this.evalConfigRule(this.ruleName!);
     console.log(`Stared evaluation of config rule "${this.ruleName}"`);
 
-    const finalFinding = await this.lookForNewerAccount1Finding(initialFinding?.updated || latestUpdated, this.timeoutMinutes);
+    const finalFinding = await this.lookForNewerAccount1Finding(
+      new Date(),
+      this.alternateContact ? 'passed' : 'failed',
+      this.timeoutMinutes
+    );
+
     console.log(`Gathered final finding: ${JSON.stringify(finalFinding, null, 2)}`);
 
     if (!finalFinding) {
@@ -245,16 +247,25 @@ export class AwsFindingTester {
     });
   }
 
-  private async lookForNewerAccount1Finding(newerThan: Date, timeoutMinutes: number = 10) {
+  private async lookForNewerAccount1Finding(newerThan: Date, expectedStatus: 'passed' | 'failed' | 'any', timeoutMinutes: number = 10) {
     let trial = 0;
     let sleepSeconds = 20;
     while (trial * sleepSeconds < timeoutMinutes * 60) {
       await sleep(sleepSeconds);
       const latestFinding = await this.getLatestUpdatedAccount1Finding();
-      if (latestFinding && latestFinding.updated && latestFinding.updated > newerThan) {
-        return latestFinding;
+      if (latestFinding
+        && latestFinding.updated
+        && latestFinding.updated > newerThan
+      ) {
+        if (expectedStatus === 'any' || latestFinding.compliance?.status?.toString() === expectedStatus) {
+          return latestFinding;
+        } else {
+          await this.evalConfigRule(this.ruleName!);
+          newerThan = latestFinding.updated;
+        }
       }
       trial += 1;
+      console.log(`Trial ${trial}. No newer finding found. Updated value: ${latestFinding?.updated}`);
     }
   }
 }
