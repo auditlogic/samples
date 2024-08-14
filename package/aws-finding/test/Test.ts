@@ -3,7 +3,6 @@ import { URL, UUID } from '@auditmation/types-core-js';
 import { expect } from 'chai';
 import { config } from 'dotenv';
 import { AwsFindingTester } from '../src';
-import { latestUpdatedFinding } from '../src/Util';
 
 config();
 
@@ -14,7 +13,7 @@ describe('AWS Finding test', () => {
     const boundaryId = process.env.FINDINGTEST_BOUNDARY_ID;
     const accountId = process.env.FINDINGTEST_AWS_ACCOUNT_ID;
     const serverUrl = process.env.FINDINGTEST_SERVER_URL;
-    const evalMinutes = process.env.FINDINGTEST_EVAL_MINUTES;
+    const timeoutMinutes = process.env.FINDINGTEST_TIMEOUT_MINUTES;
 
     if (!orgId || !apiKey || !boundaryId || !accountId) {
       throw new Error('Missing environment variables for test');
@@ -26,18 +25,23 @@ describe('AWS Finding test', () => {
       new UUID(boundaryId),
       accountId,
       serverUrl ? new URL(serverUrl) : undefined,
-      evalMinutes ? parseInt(evalMinutes) : undefined
+      timeoutMinutes ? parseInt(timeoutMinutes) : undefined
     );
 
-    const { initialFindings, finalFindings } = await tester.run();
+    const { initialFinding, finalFinding } = await tester.run();
 
-    const latestInitial = latestUpdatedFinding(initialFindings);
-    const latestFinal = latestUpdatedFinding(finalFindings);
 
-    expect(latestInitial).to.not.deep.equal(latestFinal);
+    // case 1: alternate contact existed
+    if (initialFinding) {
+      expect(initialFinding).to.not.deep.equal(finalFinding);
 
-    expect(latestInitial?.compliance?.status).to.equal(Compliance.StatusEnum.Failed);
-    expect(latestFinal?.compliance?.status).to.equal(Compliance.StatusEnum.Passed);
+      expect(initialFinding?.compliance?.status).to.equal(Compliance.StatusEnum.Failed);
+      expect(finalFinding?.compliance?.status).to.equal(Compliance.StatusEnum.Passed);
+    }
 
+    // case 2: alternate contact did not exist
+    else {
+      expect(finalFinding?.compliance?.status).to.equal(Compliance.StatusEnum.Failed); 
+    }
   }).timeout(0);
 })
