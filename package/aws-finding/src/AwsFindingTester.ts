@@ -4,7 +4,7 @@ import { Finding, SecurityHubHubImpl } from '@auditlogic/module-amazon-aws-secur
 import { ConnectionMetadata } from '@auditmation/hub-core';
 import { newHub } from '@auditmation/module-auditmation-auditmation-hub';
 import { newPlatform } from '@auditmation/module-auditmation-auditmation-platform';
-import { URL, UUID } from '@auditmation/types-core-js';
+import { NotFoundError, URL, UUID } from '@auditmation/types-core-js';
 import { PromisePool } from '@supercharge/promise-pool';
 import { rmSync, writeFileSync } from 'fs';
 import { extractFindingConfigRule, latestUpdatedFinding, sleep } from './Util';
@@ -24,7 +24,7 @@ export class AwsFindingTester {
     private boundaryId: UUID,
     private awsAccountId: string,
     private serverUrl: URL = new URL('https://api.app.zerobias.com'),
-    private evalMinutes: number = 3
+    private timeoutMinutes: number = 10
   ) { }
 
   private get hubUrl(): URL {
@@ -47,51 +47,57 @@ export class AwsFindingTester {
   private alternateContact?: AlternateContact;
   private ruleName?: string;
 
-  public async run(): Promise<{ initialFindings: Finding[], finalFindings: Finding[] }> {
+  public async run(): Promise<{ initialFinding?: Finding, finalFinding: Finding }> {
 
     await this.init();
     await this.makeConnections();
 
     this.alternateContact = await this.getCurrentSecurityContact();
     console.log(`Initial alternate contact stored: ${JSON.stringify(this.alternateContact)}`);
-    writeFileSync(BACKUP_CONTACT_FILENAME, JSON.stringify(this.alternateContact, null, 2));
 
-    await this.deleteAlternateContact();
-    console.log('Alternate contact has been deleted.');
+    let initialFinding: Finding | undefined;
 
     this.ruleName = await this.getAccount1ConfigRuleName();
     console.log(`Config rule name: ${this.ruleName}`);
 
+    if (this.alternateContact) {
+      writeFileSync(BACKUP_CONTACT_FILENAME, JSON.stringify(this.alternateContact, null, 2));
+
+      await this.deleteAlternateContact();
+      console.log('Alternate contact has been deleted.');
+
+      await this.evalConfigRule(this.ruleName!);
+      console.log(`Stared evaluation of config rule "${this.ruleName}"`);
+
+      initialFinding = await this.lookForNewerAccount1Finding(new Date(), 'failed', this.timeoutMinutes);
+      console.log(`Gathered initial finding: ${JSON.stringify(initialFinding, null, 2)}`);
+
+      await this.updateSecurityContact(this.alternateContact);
+      console.log('Alternate contact has been updated.');
+      rmSync(BACKUP_CONTACT_FILENAME);
+    }
+
     await this.evalConfigRule(this.ruleName!);
     console.log(`Stared evaluation of config rule "${this.ruleName}"`);
 
-    console.log(`Waiting for ${this.evalMinutes} minutes...`);
-    await sleep(this.evalMinutes * 60);
+    const finalFinding = await this.lookForNewerAccount1Finding(
+      new Date(),
+      this.alternateContact ? 'passed' : 'failed',
+      this.timeoutMinutes
+    );
 
-    const initialFindings = await this.listAccount1Finding();
-    console.log(`Gathered initial findings`);
-    console.log(`Latest initial finding: ${JSON.stringify(latestUpdatedFinding(initialFindings), null, 2)}`);
+    console.log(`Gathered final finding: ${JSON.stringify(finalFinding, null, 2)}`);
 
-    await this.updateSecurityContact(this.alternateContact);
-    console.log('Alternate contact has been updated.');
-    rmSync(BACKUP_CONTACT_FILENAME);
+    if (!finalFinding) {
+      throw new Error('Not finding found.')
+    }
 
-    await this.evalConfigRule(this.ruleName!);
-    console.log(`Stared evaluation of config rule "${this.ruleName}"`);
-
-    console.log(`Waiting for ${this.evalMinutes} minutes...`);
-    await sleep(this.evalMinutes * 60);
-
-    const finalFindings = await this.listAccount1Finding();
-    console.log(`Gathered final findings`);
-    console.log(`Latest final finding: ${JSON.stringify(latestUpdatedFinding(finalFindings), null, 2)}`);
-
-    return { initialFindings, finalFindings };
+    return { initialFinding, finalFinding };
   }
 
   private async init() {
     console.log(`\nConnecting to ${this.serverUrl}...\nOrg: ${this.orgId}`);
-    console.log(`Eval minutes: ${this.evalMinutes}`);
+    console.log(`Timeout minutes: ${this.timeoutMinutes}`);
     const connectionProfile = {
       orgId: this.orgId,
       apiKey: this.apiKey,
@@ -154,7 +160,7 @@ export class AwsFindingTester {
           };
         });
 
-    let connectionId = connectionInfos
+    const connectionId = connectionInfos
       .find(
         info => info.metadata?.remoteSystemInfo?.account === this.awsAccountId
       )?.connectionId;
@@ -181,6 +187,10 @@ export class AwsFindingTester {
 
   private async getCurrentSecurityContact() {
     return this.accounts.getAlternateContactApi().get(ContactTypeEnum.Security).catch(e => {
+      if (e instanceof NotFoundError) {
+        console.log('No alternate contact found.');
+        return undefined;
+      }
       console.log(`Error while trying to get alternate contact: ${e}`);
       throw e;
     });
@@ -208,6 +218,11 @@ export class AwsFindingTester {
     }
   }
 
+  private async getLatestUpdatedAccount1Finding(): Promise<Finding | undefined> {
+    const findings = await this.listAccount1Finding();
+    return findings && findings.length ? latestUpdatedFinding(findings) : undefined;
+  }
+
   private async updateSecurityContact(alternateContact: AlternateContact) {
     return this.accounts.getAlternateContactApi().update(
       {
@@ -230,5 +245,27 @@ export class AwsFindingTester {
       console.log(`Error while trying to start config rule evaluation: ${e}`);
       console.log(`Moving on...`);
     });
+  }
+
+  private async lookForNewerAccount1Finding(newerThan: Date, expectedStatus: 'passed' | 'failed' | 'any', timeoutMinutes: number = 10) {
+    let trial = 0;
+    let sleepSeconds = 20;
+    while (trial * sleepSeconds < timeoutMinutes * 60) {
+      await sleep(sleepSeconds);
+      const latestFinding = await this.getLatestUpdatedAccount1Finding();
+      if (latestFinding
+        && latestFinding.updated
+        && latestFinding.updated > newerThan
+      ) {
+        if (expectedStatus === 'any' || latestFinding.compliance?.status?.toString() === expectedStatus) {
+          return latestFinding;
+        } else {
+          await this.evalConfigRule(this.ruleName!);
+          newerThan = latestFinding.updated;
+        }
+      }
+      trial += 1;
+      console.log(`Trial ${trial}. No newer finding found. Updated value: ${latestFinding?.updated}`);
+    }
   }
 }
